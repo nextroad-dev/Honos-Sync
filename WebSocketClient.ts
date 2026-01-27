@@ -5,6 +5,7 @@ export class WebSocketClient {
     private ws: WebSocket | null = null;
     private token: string;
     private reconnectTimer: NodeJS.Timeout | null = null;
+    private heartbeatTimer: NodeJS.Timeout | null = null;
     private isConnecting: boolean = false;
     private onFileChangeCallback: ((event: any) => void) | null = null;
     private onStatusChangeCallback: ((connected: boolean) => void) | null = null;
@@ -29,6 +30,11 @@ export class WebSocketClient {
             this.ws.onopen = () => {
                 console.log('[WS] Connected');
                 this.isConnecting = false;
+
+                if (this.reconnectTimer) {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                }
 
                 // Send authentication message
                 this.send({ type: 'auth', token: this.token });
@@ -67,6 +73,11 @@ export class WebSocketClient {
                 this.isConnecting = false;
                 this.onStatusChangeCallback?.(false);
 
+                if (this.heartbeatTimer) {
+                    clearInterval(this.heartbeatTimer);
+                    this.heartbeatTimer = null;
+                }
+
                 // Attempt reconnect after 5 seconds
                 this.scheduleReconnect();
             };
@@ -85,7 +96,11 @@ export class WebSocketClient {
 
     private startHeartbeat() {
         // Send ping every 30 seconds
-        setInterval(() => {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+        }
+
+        this.heartbeatTimer = setInterval(() => {
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.send({ type: 'ping' });
             }
@@ -107,6 +122,11 @@ export class WebSocketClient {
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
+        }
+
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
         }
 
         if (this.ws) {
