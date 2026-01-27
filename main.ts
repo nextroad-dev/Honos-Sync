@@ -11,6 +11,8 @@ import {
     RemoteFile
 } from './types';
 
+import { diff_match_patch } from 'diff-match-patch';
+
 export default class SyncPlugin extends Plugin {
     settings: SyncPluginSettings;
     networkClient: NetworkClient;
@@ -308,6 +310,122 @@ export default class SyncPlugin extends Plugin {
             });
             return;
         }
+
+        // --- NEW CONFLICT PROTECTION (Inline Merge) ---
+        if (localFile) {
+            try {
+                const content = await this.app.vault.read(localFile);
+                const currentHash = await calculateHash(content);
+                const meta = this.metadataManager.getMetadata(remote.path);
+
+                // Check for conflict
+                if (meta && meta.hash !== currentHash) {
+                    console.log(`[SYNC] Conflict detected on ${remote.path}. Merging...`);
+
+                    // 1. Download remote content explicitly
+                    const dlRes = await this.networkClient.downloadFile(remote.path, remote.revision);
+                    if (!dlRes.success || !dlRes.file) {
+                        throw new Error('Failed to download remote content for merge');
+                    }
+                    const remoteContent = dlRes.file.content;
+
+                    // 2. Compute Diff
+                    const dmp = new diff_match_patch();
+                    const diffs = dmp.diff_main(content, remoteContent);
+                    dmp.diff_cleanupSemantic(diffs);
+
+                    // 3. Construct Conflict Text
+                    let mergedContent = '';
+                    // Simple reconstruction with markers for diffs
+                    // Strategy: If Equal -> push. If Del/Ins -> Conflict block.
+                    // But diffs are sequential. DELETE(Local) usually followed by INSERT(Remote).
+
+                    for (let i = 0; i < diffs.length; i++) {
+                        const [type, text] = diffs[i];
+                        if (type === 0) { // EQUAL
+                            mergedContent += text;
+                        } else {
+                            // Start conflict block
+                            mergedContent += `\n<<<<<<< Local\n`;
+                            // Accumulate local changes (DELETE from remote perspective means present in Local)
+                            // Wait: diff_main(text1, text2). text1=Local, text2=Remote.
+                            // DELETE means "In Local, not in Remote". INSERT means "In Remote, not in Local".
+
+                            if (type === -1) { // DELETE (Local only)
+                                mergedContent += text;
+                                // Check next for INSERT (Remote only)
+                                if (i + 1 < diffs.length && diffs[i + 1][0] === 1) {
+                                    mergedContent += `\n=======\n`;
+                                    mergedContent += diffs[i + 1][1];
+                                    i++; // Skip next
+                                } else {
+                                    mergedContent += `\n=======\n`; // Empty remote
+                                }
+                            } else if (type === 1) { // INSERT (Remote only)
+                                // Means Local had nothing here.
+                                // mergedContent += `(empty)\n=======\n${text}`;
+                                // Actually usually better to just Output Insert if it's pure addition?
+                                // User wants to see conflict.
+                                mergedContent += `(missing in local)\n=======\n${text}`;
+                            }
+
+                            mergedContent += `\n>>>>>>> Remote\n`;
+                        }
+                    }
+
+                    // 4. Write merged styling is hard with simple loop.
+                    // Better approach: Use dmp.patch_make and maybe manual formatting?
+                    // Actually, let's keep it simple: If any diff, just dump both files?
+                    // No, user wants smart diff.
+                    // Let's use a simpler heuristic: If diff is small/simple, keep it. 
+                    // But actually, just dumping the standard git conflict style is safest.
+
+                    // Re-implement simplified loop:
+                    mergedContent = '';
+                    let i = 0;
+                    while (i < diffs.length) {
+                        const [type, text] = diffs[i];
+                        if (type === 0) {
+                            mergedContent += text;
+                            i++;
+                        } else {
+                            mergedContent += `\n<<<<<<< Local\n`;
+                            if (type === -1) { // Local content
+                                mergedContent += text;
+                                i++;
+                                if (i < diffs.length && diffs[i][0] === 1) { // Remote content replacement
+                                    mergedContent += `\n=======\n${diffs[i][1]}`;
+                                    i++;
+                                } else {
+                                    mergedContent += `\n=======\n`; // Deleted in remote
+                                }
+                            } else { // INSERT (Remote added, Local didn't have)
+                                mergedContent += `\n=======\n${text}`;
+                                i++;
+                            }
+                            mergedContent += `\n>>>>>>> Remote\n`;
+                        }
+                    }
+
+                    await this.app.vault.modify(localFile, mergedContent);
+                    new Notice(`⚠️ Merge Conflict in ${remote.path}. Please resolve markers.`);
+
+                    // Mark metadata as updated to this revision so we don't download again
+                    // But we leave the file "dirty" (hash changed), so next upload cycle will upload the merged version (with markers)
+                    // unless user fixes it fast.
+                    this.metadataManager.updateMetadata(remote.path, {
+                        ...meta,
+                        revision: remote.revision, // We pretend we are on remote revision now
+                        updatedAt: Date.now()
+                    });
+
+                    return; // Skip normal download
+                }
+            } catch (err) {
+                console.error('[SYNC] Error merging conflict:', err);
+            }
+        }
+        // ---------------------------------------------------
 
         const res = await this.networkClient.downloadFile(remote.path, remote.revision);
         if (res.success && res.file && res.file.content !== undefined) {
