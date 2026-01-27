@@ -312,7 +312,10 @@ export default class SyncPlugin extends Plugin {
 
     updateStatusBar(text: string, state: 'idle' | 'syncing' | 'error') {
         this.statusBarItem.setText(`Honos: ${text}`);
-        if (state === 'error') this.statusBarItem.addClass('status-bar-item mod-error');
-        else this.statusBarItem.removeClass('status-bar-item mod-error');
+        if (state === 'error') {
+            this.statusBarItem.addClass('mod-error');
+        } else {
+            this.statusBarItem.removeClass('mod-error');
+        }
     }
 }
