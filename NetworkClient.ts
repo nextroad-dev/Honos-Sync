@@ -163,10 +163,10 @@ export class NetworkClient {
     // ... Keep legacy verify/status methods if needed for backward compatibility or general use
 
     async verifyToken(): Promise<AuthVerifyResponse> {
-        // Reuse legacy auth endpoint or new one if available. Legacy is fine.
+        // Use token-auth endpoint
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/web/user/auth/me`, // Using the generic user info endpoint
+                url: `${this.baseUrl}/obsidian/auth/verify`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
