@@ -106,68 +106,15 @@ export class SyncPluginSettingTab extends PluginSettingTab {
                     this.display(); // Refresh the settings tab
                 }));
 
-        // ===== Device Settings =====
-        containerEl.createEl('h3', { text: '💻 Device Settings' });
-
-        new Setting(containerEl)
-            .setName('Device Name')
-            .setDesc('A friendly name for this device (helps identify sync sources)')
-            .addText(text => text
-                .setPlaceholder('My MacBook')
-                .setValue(this.plugin.settings.deviceName)
-                .onChange(async (value) => {
-                    this.plugin.settings.deviceName = value;
-                    await this.plugin.saveSettings();
-                    this.plugin.networkClient.setDeviceName(value);
-                }));
-
         // ===== Sync Settings =====
         if (this.plugin.settings.token) {
-            containerEl.createEl('h3', { text: '🔄 Sync Settings' });
-
-            new Setting(containerEl)
-                .setName('Auto Sync')
-                .setDesc('Automatically sync files at regular intervals')
-                .addToggle(toggle => toggle
-                    .setValue(this.plugin.settings.autoSync)
-                    .onChange(async (value) => {
-                        this.plugin.settings.autoSync = value;
-                        await this.plugin.saveSettings();
-                        if (value) {
-                            this.plugin.startAutoSync();
-                        } else {
-                            this.plugin.stopAutoSync();
-                        }
-                    }));
-
-            new Setting(containerEl)
-                .setName('Sync Interval')
-                .setDesc('How often to sync (in minutes)')
-                .addSlider(slider => slider
-                    .setLimits(1, 60, 1)
-                    .setValue(this.plugin.settings.syncInterval)
-                    .setDynamicTooltip()
-                    .onChange(async (value) => {
-                        this.plugin.settings.syncInterval = value;
-                        await this.plugin.saveSettings();
-                        if (this.plugin.settings.autoSync) {
-                            this.plugin.startAutoSync();
-                        }
-                    }));
-
-            new Setting(containerEl)
-                .setName('Use Legacy Sync')
-                .setDesc('Enable to use old sync method (no version control). Only use if you have sync issues.')
-                .addToggle(toggle => toggle
-                    .setValue(this.plugin.settings.useLegacySync)
-                    .onChange(async (value) => {
-                        this.plugin.settings.useLegacySync = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.networkClient.setUseLegacySync(value);
-                    }));
-
             // ===== Sync Actions =====
             containerEl.createEl('h3', { text: '⚡ Sync Actions' });
+
+            containerEl.createEl('p', {
+                text: 'Auto-sync is enabled (every 1 minute).',
+                cls: 'setting-item-description'
+            });
 
             new Setting(containerEl)
                 .setName('Sync Now')

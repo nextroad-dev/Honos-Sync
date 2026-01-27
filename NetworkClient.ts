@@ -6,20 +6,15 @@ import {
     FileUploadResponse,
     FileDeleteResponse,
     SyncStatusResponse,
-    RemoteFile,
 } from './types';
 
 /**
- * NetworkClient - Handles all API communication with Honos-Core backend
- * 
- * API Base Paths:
- * - /obsidian/* - Obsidian plugin endpoints (requires API Token)
+ * NetworkClient - Handles V2 API communication
  */
 export class NetworkClient {
     private baseUrl: string;
     private token: string;
     private deviceName: string;
-    private useLegacySync: boolean = false;
 
     constructor(baseUrl: string, token: string = '', deviceName: string = '') {
         this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
@@ -27,45 +22,14 @@ export class NetworkClient {
         this.deviceName = deviceName;
     }
 
-    /**
-     * Update the authentication token
-     */
     setToken(token: string): void {
         this.token = token;
     }
 
-    /**
-     * Update the device name
-     */
     setDeviceName(deviceName: string): void {
         this.deviceName = deviceName;
     }
 
-    /**
-     * Set sync mode
-     */
-    setUseLegacySync(useLegacy: boolean): void {
-        this.useLegacySync = useLegacy;
-    }
-
-    /**
-     * Get API base path based on sync mode
-     */
-    private getApiBase(endpoint: string): string {
-        // Auth and Status are always on root /obsidian or sharedv1
-        if (endpoint === 'auth' || endpoint === 'status') {
-            return `${this.baseUrl}/obsidian`;
-        }
-
-        // File operations depend on version
-        return this.useLegacySync
-            ? `${this.baseUrl}/obsidian`
-            : `${this.baseUrl}/obsidian/v2`;
-    }
-
-    /**
-     * Get common headers for authenticated requests
-     */
     private getAuthHeaders(): Record<string, string> {
         return {
             'Authorization': `Bearer ${this.token}`,
@@ -74,62 +38,20 @@ export class NetworkClient {
     }
 
     /**
-     * Verify API Token and get user info
-     * GET /obsidian/auth/verify
-     */
-    async verifyToken(): Promise<AuthVerifyResponse> {
-        try {
-            const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/auth/verify`,
-                method: 'GET',
-                headers: this.getAuthHeaders(),
-            });
-
-            if (response.status === 200) {
-                const data = response.json;
-                return {
-                    success: true,
-                    user: data.user,
-                };
-            } else {
-                return {
-                    success: false,
-                    error: response.json?.error || 'Token verification failed',
-                };
-            }
-        } catch (error: any) {
-            console.error('Error verifying token:', error);
-            return {
-                success: false,
-                error: error?.message || 'Failed to verify token. Please check your connection.',
-            };
-        }
-    }
-
-    /**
-     * Get all files list
-     * GET /obsidian/files
+     * V2 List Files
      */
     async listFiles(): Promise<FileListResponse> {
         try {
-            const apiBase = this.getApiBase('files');
             const response = await requestUrl({
-                url: `${apiBase}/files`,
+                url: `${this.baseUrl}/obsidian/v2/files`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
 
             if (response.status === 200) {
-                const data = response.json;
-                return {
-                    success: true,
-                    files: data.files || [],
-                    totalFiles: data.totalFiles,
-                    totalSize: data.totalSize,
-                };
-            } else {
-                return this.handleErrorResponse(response);
+                return response.json;
             }
+            return this.handleErrorResponse(response);
         } catch (error: any) {
             console.error('Error listing files:', error);
             return {
@@ -140,36 +62,23 @@ export class NetworkClient {
     }
 
     /**
-     * Download a file
-     * GET /obsidian/files/{path}
+     * V2 Download File
      */
     async downloadFile(filePath: string, revision?: number): Promise<FileDownloadResponse> {
         try {
-            const apiBase = this.getApiBase('files');
             const encodedPath = encodeURIComponent(filePath);
-            let url = `${apiBase}/files/${encodedPath}`;
-
-            if (revision !== undefined && !this.useLegacySync) {
-                url += `?revision=${revision}`;
-            }
-
+            const query = revision ? `?revision=${revision}` : '';
             const response = await requestUrl({
-                url: url,
+                url: `${this.baseUrl}/obsidian/v2/files/${encodedPath}${query}`,
                 method: 'GET',
                 headers: this.getAuthHeaders(),
             });
 
             if (response.status === 200) {
-                const data = response.json;
-                return {
-                    success: true,
-                    file: data.file,
-                    content: data.content,
-                    isConflict: data.isConflict,
-                };
-            } else {
-                return this.handleErrorResponse(response);
+                // V2 response structure: { success: true, file: { ..., content: "..." } }
+                return response.json;
             }
+            return this.handleErrorResponse(response);
         } catch (error: any) {
             console.error('Error downloading file:', error);
             return {
@@ -180,59 +89,39 @@ export class NetworkClient {
     }
 
     /**
-     * Upload or update a file
-     * POST /obsidian/upload
+     * V2 Upload File
      */
     async uploadFile(
         filePath: string,
-        content: ArrayBuffer | string,
-        options: { parentRevision?: number, deviceId?: string } = {}
+        chunks: string[],
+        hash: string,
+        size: number,
+        parentRevision: number
     ): Promise<FileUploadResponse> {
         try {
-            // Convert ArrayBuffer to string if needed
-            let contentString: string;
-            if (content instanceof ArrayBuffer) {
-                contentString = new TextDecoder().decode(content);
-            } else {
-                contentString = content;
-            }
-
-            const apiBase = this.getApiBase('files');
-            const body: any = {
-                path: filePath,
-                content: contentString,
-            };
-
-            if (!this.useLegacySync) {
-                if (options.parentRevision !== undefined) body.parentRevision = options.parentRevision;
-                if (options.deviceId) body.deviceId = options.deviceId;
-            }
-
             const response = await requestUrl({
-                url: `${apiBase}/upload`,
+                url: `${this.baseUrl}/obsidian/v2/upload`,
                 method: 'POST',
                 headers: this.getAuthHeaders(),
-                body: JSON.stringify(body),
-                throw: false // Handle 409 manualy
+                body: JSON.stringify({
+                    filePath,
+                    hash,
+                    size,
+                    parentRevision,
+                    deviceId: this.deviceName,
+                    chunks
+                }),
             });
 
-            if (response.status === 200 || response.status === 201) {
-                const data = response.json;
-                return {
-                    success: true,
-                    message: data.message || 'File uploaded successfully',
-                    file: data.file,
-                };
-            } else if (response.status === 409) {
-                const data = response.json;
-                return {
-                    success: false,
-                    error: 'Conflict detected',
-                    conflict: data.conflict,
-                };
-            } else {
-                return this.handleErrorResponse(response);
+            if (response.status === 200) {
+                return response.json;
             }
+            // Handle Conflict (409)
+            if (response.status === 409) {
+                return response.json; // Should contain conflict data
+            }
+
+            return this.handleErrorResponse(response);
         } catch (error: any) {
             console.error('Error uploading file:', error);
             return {
@@ -243,50 +132,25 @@ export class NetworkClient {
     }
 
     /**
-     * Delete a file
-     * DELETE /obsidian/files/{path}
+     * V2 Delete File
      */
-    async deleteFile(
-        filePath: string,
-        options: { parentRevision?: number, deviceId?: string } = {}
-    ): Promise<FileDeleteResponse> {
+    async deleteFile(filePath: string, parentRevision: number): Promise<FileDeleteResponse> {
         try {
-            const apiBase = this.getApiBase('files');
             const encodedPath = encodeURIComponent(filePath);
-
-            const reqOptions: any = {
-                url: `${apiBase}/files/${encodedPath}`,
+            const response = await requestUrl({
+                url: `${this.baseUrl}/obsidian/v2/files/${encodedPath}`,
                 method: 'DELETE',
                 headers: this.getAuthHeaders(),
-                throw: false
-            };
+                body: JSON.stringify({
+                    parentRevision,
+                    deviceId: this.deviceName
+                })
+            });
 
-            if (!this.useLegacySync) {
-                reqOptions.body = JSON.stringify({
-                    parentRevision: options.parentRevision,
-                    deviceId: options.deviceId
-                });
+            if (response.status === 200 || response.status === 409) {
+                return response.json;
             }
-
-            const response = await requestUrl(reqOptions);
-
-            if (response.status === 200) {
-                const data = response.json;
-                return {
-                    success: true,
-                    message: data.message || 'File deleted successfully',
-                    deletedFile: data.deletedFile,
-                };
-            } else if (response.status === 409) {
-                const data = response.json;
-                return {
-                    success: false,
-                    error: 'Conflict detected during deletion',
-                    conflict: data.conflict
-                };
-            } else {
-                return this.handleErrorResponse(response);
-            }
+            return this.handleErrorResponse(response);
         } catch (error: any) {
             console.error('Error deleting file:', error);
             return {
@@ -296,38 +160,28 @@ export class NetworkClient {
         }
     }
 
-    /**
-     * Attempt auto-merge for conflicted file
-     * POST /obsidian/v2/conflicts/auto-merge
-     */
-    async attemptAutoMerge(params: {
-        filePath: string;
-        ourContent: string;
-        ancestorRevision: number;
-        theirRevision: number;
-    }): Promise<any> {
+    // ... Keep legacy verify/status methods if needed for backward compatibility or general use
+
+    async verifyToken(): Promise<AuthVerifyResponse> {
+        // Reuse legacy auth endpoint or new one if available. Legacy is fine.
         try {
             const response = await requestUrl({
-                url: `${this.baseUrl}/obsidian/v2/conflicts/auto-merge`,
-                method: 'POST',
+                url: `${this.baseUrl}/obsidian/web/user/auth/me`, // Using the generic user info endpoint
+                method: 'GET',
                 headers: this.getAuthHeaders(),
-                body: JSON.stringify(params),
             });
 
             if (response.status === 200) {
-                return response.json;
-            } else {
-                return { success: false, error: 'Auto-merge failed server-side' };
+                return { success: true, user: response.json };
             }
-        } catch (error) {
-            console.error('Error attempting auto-merge:', error);
-            return { success: false, error: 'Auto-merge network error' };
+            return { success: false, error: 'Token invalid' };
+        } catch (e: any) {
+            return { success: false, error: e.message };
         }
     }
 
     /**
-     * Get sync status
-     * GET /obsidian/status
+     * Get legacy sync status
      */
     async getSyncStatus(): Promise<SyncStatusResponse> {
         try {
@@ -338,26 +192,16 @@ export class NetworkClient {
             });
 
             if (response.status === 200) {
-                const data = response.json;
-                return {
-                    success: true,
-                    status: data.status,
-                };
-            } else {
-                return this.handleErrorResponse(response);
+                return response.json;
             }
+            return this.handleErrorResponse(response);
         } catch (error: any) {
-            console.error('Error getting sync status:', error);
-            return {
-                success: false,
-                error: error?.message || 'Failed to get sync status.',
-            };
+            return { success: false, error: error?.message || 'Failed to get sync status' };
         }
     }
 
     /**
-     * Check server health
-     * GET /health
+     * Check health
      */
     async checkHealth(): Promise<boolean> {
         try {
@@ -365,60 +209,33 @@ export class NetworkClient {
                 url: `${this.baseUrl}/health`,
                 method: 'GET',
             });
-            return response.status === 200 && response.json?.status === 'ok';
-        } catch (error) {
-            console.error('Health check failed:', error);
+            return response.status === 200;
+        } catch {
             return false;
         }
     }
 
     /**
      * Get server info
-     * GET /
      */
-    async getServerInfo(): Promise<{ service: string; version: string; status: string } | null> {
+    async getServerInfo(): Promise<any> {
         try {
             const response = await requestUrl({
                 url: `${this.baseUrl}/`,
                 method: 'GET',
             });
-            if (response.status === 200) {
-                return response.json;
-            }
-            return null;
-        } catch (error) {
-            console.error('Error getting server info:', error);
+            return response.status === 200 ? response.json : null;
+        } catch {
             return null;
         }
     }
 
-    /**
-     * Handle API error responses
-     */
     private handleErrorResponse(response: any): { success: false; error: string } {
         const status = response.status;
         const data = response.json;
-
-        if (status === 401) {
-            return {
-                success: false,
-                error: 'Unauthorized: Invalid or expired API token. Please check your token.',
-            };
-        } else if (status === 403) {
-            return {
-                success: false,
-                error: 'Forbidden: You do not have permission to perform this action.',
-            };
-        } else if (status === 404) {
-            return {
-                success: false,
-                error: 'Not found: The requested resource does not exist.',
-            };
-        } else {
-            return {
-                success: false,
-                error: data?.error || `Request failed with status ${status}`,
-            };
-        }
+        return {
+            success: false,
+            error: data?.error || `Request failed with status ${status}`,
+        };
     }
 }

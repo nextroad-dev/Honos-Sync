@@ -1,3 +1,5 @@
+import { FileMetadata } from './MetadataManager';
+
 /**
  * Plugin Settings Interface
  */
@@ -6,8 +8,8 @@ export interface SyncPluginSettings {
     deviceName: string;
     autoSync: boolean;
     syncInterval: number; // in minutes
-    deviceId: string;
-    useLegacySync: boolean;
+    // Store metadata in settings for persistence
+    filesMetadata: Record<string, FileMetadata>;
 }
 
 /**
@@ -18,8 +20,7 @@ export const DEFAULT_SETTINGS: SyncPluginSettings = {
     deviceName: 'Obsidian Device',
     autoSync: false,
     syncInterval: 5,
-    deviceId: '', // Will be generated on load if empty
-    useLegacySync: false,
+    filesMetadata: {},
 };
 
 export const SERVER_URL = 'https://api.honos.dev';
@@ -43,20 +44,20 @@ export interface AuthVerifyResponse {
 }
 
 /**
- * File info from server
+ * File info from server (V2)
  */
 export interface RemoteFile {
-    id: string;
     path: string;
     hash: string;
     size: number;
-    createdAt: string;
+    revision: number;
+    parentRevision: number | null;
+    isConflict: boolean;
     updatedAt: string;
-    revision?: number;
 }
 
 /**
- * File List Response
+ * File List Response (V2)
  */
 export interface FileListResponse {
     success: boolean;
@@ -67,118 +68,19 @@ export interface FileListResponse {
 }
 
 /**
- * File Download Response
+ * File Download Response (V2)
  */
 export interface FileDownloadResponse {
     success: boolean;
-    file?: {
-        path: string;
-        hash: string;
-        size: number;
-        updatedAt: string;
-        revision?: number;
-        parentRevision?: number;
-    };
-    content?: string;
-    error?: string;
-    isConflict?: boolean;
-}
-
-/**
- * File Upload Response
- */
-export interface FileUploadResponse {
-    success: boolean;
-    message?: string;
-    file?: {
-        id: string;
-        path: string;
-        hash: string;
-        size: number;
-        revision?: number;
-    };
-    error?: string;
-    conflict?: ConflictInfo;
-}
-
-/**
- * File Delete Response
- */
-export interface FileDeleteResponse {
-    success: boolean;
-    message?: string;
-    deletedFile?: {
-        path: string;
-        size: number;
-    };
-    error?: string;
-    conflict?: ConflictInfo;
-}
-
-/**
- * Recent Activity
- */
-export interface RecentActivity {
-    id: string;
-    action: 'upload' | 'download' | 'delete';
-    filePath: string;
-    timestamp: string;
-}
-
-/**
- * Sync Status Response
- */
-export interface SyncStatusResponse {
-    success: boolean;
-    status?: {
-        connected: boolean;
-        user: {
-            id: string;
-            email: string;
-        };
-        storage: {
-            used: number;
-        };
-        files: {
-            count: number;
-        };
-        recentActivity: RecentActivity[];
+    file?: RemoteFile & {
+        content: string; // V2 returns content inside file object
+        deviceId?: string;
     };
     error?: string;
 }
 
 /**
- * API Error Response
- */
-export interface APIErrorResponse {
-    error: string;
-}
-
-/**
- * Generic API Response
- */
-export interface APIResponse<T = any> {
-    success?: boolean;
-    data?: T;
-    error?: string;
-    message?: string;
-}
-
-/**
- * Local File Metadata for Version Control
- */
-export interface LocalFileMetadata {
-    path: string;
-    hash: string;
-    size: number;
-    revision: number;
-    parentRevision: number;
-    lastSyncedAt: number;
-    deviceId?: string;
-}
-
-/**
- * Conflict Info from Server
+ * Conflict Data (V2)
  */
 export interface ConflictInfo {
     currentRevision: number;
@@ -189,4 +91,35 @@ export interface ConflictInfo {
         updatedAt: string;
         deviceId: string;
     };
+}
+
+/**
+ * File Upload Response (V2)
+ */
+export interface FileUploadResponse {
+    success: boolean;
+    revision?: number;
+    message?: string;
+    error?: string;
+    conflict?: ConflictInfo; // 409 Conflict data
+}
+
+/**
+ * File Delete Response (V2)
+ */
+export interface FileDeleteResponse {
+    success: boolean;
+    revision?: number;
+    message?: string;
+    error?: string;
+    conflict?: ConflictInfo;
+}
+
+/**
+ * Sync Status Response (Legacy/Mixed)
+ */
+export interface SyncStatusResponse {
+    success: boolean;
+    status?: any;
+    error?: string;
 }

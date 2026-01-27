@@ -1,58 +1,54 @@
-import { Plugin, Notice, TFile } from 'obsidian';
+import { Plugin, Notice, TFile, debounce } from 'obsidian';
 import { SyncPluginSettingTab } from './SettingsTab';
 import { NetworkClient } from './NetworkClient';
 import { MetadataManager } from './MetadataManager';
-import { SyncManager } from './SyncManager';
-import { SyncPluginSettings, DEFAULT_SETTINGS, RemoteFile, SERVER_URL } from './types';
+import { calculateHash, splitIntoChunks } from './utils';
+import {
+    SyncPluginSettings,
+    DEFAULT_SETTINGS,
+    SERVER_URL,
+    RemoteFile
+} from './types';
 
-/**
- * Honos Sync Plugin for Obsidian
- * 
- * Syncs your Obsidian vault with Honos-Core backend server.
- */
 export default class SyncPlugin extends Plugin {
     settings: SyncPluginSettings;
     networkClient: NetworkClient;
     metadataManager: MetadataManager;
-    syncManager: SyncManager;
-
     private syncIntervalId: number | null = null;
+    private isSyncing: boolean = false;
     private statusBarItem: HTMLElement;
 
-    async onload() {
-        console.log('Loading Honos Sync Plugin');
+    // Debounced sync for file changes
+    private debouncedSync = debounce(() => {
+        console.log('Debounced sync triggered');
+        this.performSync(true);
+    }, 5000, true);
 
-        // Load settings
+    async onload() {
+        console.log('Loading Honos Sync Plugin (V2 - Enforced)');
+
         await this.loadSettings();
 
-        // Ensure device ID exists
-        if (!this.settings.deviceId) {
-            this.settings.deviceId = `device-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            await this.saveSettings();
-        }
+        // Enforce default settings
+        this.settings.autoSync = true;
+        this.settings.syncInterval = 1;
 
         // Initialize components
-        this.metadataManager = new MetadataManager(this);
-        await this.metadataManager.load();
-
         this.networkClient = new NetworkClient(
             SERVER_URL,
             this.settings.token,
             this.settings.deviceName
         );
-        this.networkClient.setUseLegacySync(this.settings.useLegacySync);
 
-        this.syncManager = new SyncManager(
-            this.app,
-            this.networkClient,
-            this.metadataManager,
-            () => this.settings
-        );
+        this.metadataManager = new MetadataManager(this);
+        if (this.settings.filesMetadata) {
+            this.metadataManager.setAllMetadata(this.settings.filesMetadata);
+        }
 
         // Add settings tab
         this.addSettingTab(new SyncPluginSettingTab(this.app, this));
 
-        // Add ribbon icon for quick sync
+        // Add ribbon icon
         this.addRibbonIcon('sync', 'Sync with Honos', async () => {
             await this.performSync();
         });
@@ -61,82 +57,34 @@ export default class SyncPlugin extends Plugin {
         this.addCommand({
             id: 'sync-vault',
             name: 'Sync vault now',
-            callback: async () => {
-                await this.performSync();
-            }
+            callback: async () => await this.performSync()
         });
 
-        this.addCommand({
-            id: 'check-sync-status',
-            name: 'Check sync status',
-            callback: async () => {
-                if (!this.settings.token) {
-                    new Notice('Please configure your API token first');
-                    return;
-                }
-                await this.showSyncStatus();
-            }
-        });
+        // Initialize status bar
+        this.statusBarItem = this.addStatusBarItem();
+        this.updateStatusBar('Idle', 'idle');
 
-        // Start auto-sync if enabled
-        if (this.settings.autoSync && this.settings.token) {
+        // Always start auto-sync if token exists
+        if (this.settings.token) {
             this.startAutoSync();
         }
 
-        // Monitor file changes
-        this.registerEvent(
-            this.app.vault.on('modify', async (file) => {
-                if (this.settings.token && file instanceof TFile) {
-                    // Start debounced sync or just log for now?
-                    // For immediate consistency, we could trigger upload.
-                    // But usually better to let auto-sync or manual sync handle it to avoid spam.
-                    // However, for single file edit, we might want to push it.
-                    // Let's stick to user request: "Modify file upload logic" (in SyncManager).
-                    // We won't auto-upload heavily here unless autoSync is better implemented.
-                    // But if we want to ensure revision control is granular,
-                    // we might want to upload on save.
-                    // For now, I'll log and let manual/interval sync handle it, or maybe trigger uploadFile?
-                    // Given the complexity of conflicts, safer to let syncManager handle batch sync or interval.
-                    // But `SyncManager.uploadFile` handles conflicts.
-                }
-            })
-        );
+        // Event Listeners for File Changes
+        this.registerEvent(this.app.vault.on('modify', (f) => this.onChange(f)));
+        this.registerEvent(this.app.vault.on('create', (f) => this.onChange(f)));
+        this.registerEvent(this.app.vault.on('delete', () => this.debouncedSync()));
+        this.registerEvent(this.app.vault.on('rename', () => this.debouncedSync()));
+    }
 
-        // Handle Rename
-        this.registerEvent(
-            this.app.vault.on('rename', async (file, oldPath) => {
-                if (this.settings.token && file instanceof TFile) {
-                    console.log(`File renamed: ${oldPath} -> ${file.path}`);
-
-                    // 1. Delete old path on server
-                    await this.syncManager.deleteFile(oldPath);
-
-                    // 2. Upload new path
-                    await this.syncManager.uploadFile(file);
-
-                    // 3. Update local metadata
-                    await this.metadataManager.renameMetadata(oldPath, file.path);
-                }
-            })
-        );
-
-        this.registerEvent(
-            this.app.vault.on('delete', async (file) => {
-                if (this.settings.token && file instanceof TFile) {
-                    console.log(`File deleted: ${file.path}`);
-                    await this.syncManager.deleteFile(file.path);
-                }
-            })
-        );
-
-        // Add status bar item
-        this.statusBarItem = this.addStatusBarItem();
-        this.updateStatusBar('Idle', 'idle');
+    onChange(file: any) {
+        if (this.settings.token && file instanceof TFile) {
+            this.debouncedSync();
+        }
     }
 
     onunload() {
-        console.log('Unloading Honos Sync Plugin');
         this.stopAutoSync();
+        this.saveSettings(); // Save metadata on unload
     }
 
     async loadSettings() {
@@ -144,89 +92,173 @@ export default class SyncPlugin extends Plugin {
     }
 
     async saveSettings() {
+        // Persist metadata into settings
+        this.settings.filesMetadata = this.metadataManager.getAllMetadata();
         await this.saveData(this.settings);
     }
 
-    /**
-     * Start auto-sync interval
-     */
     startAutoSync(): void {
-        this.stopAutoSync(); // Clear existing interval
-
-        const intervalMs = this.settings.syncInterval * 60 * 1000;
+        this.stopAutoSync();
+        // Force 1 minute interval
+        const intervalMs = 60 * 1000;
         this.syncIntervalId = window.setInterval(async () => {
-            if (this.settings.token) {
-                console.log('Auto-sync triggered');
-                this.updateStatusBar('Syncing', 'syncing');
-                await this.syncManager.syncVault(true); // Silent sync
-                this.updateStatusBar('Idle', 'idle');
+            if (this.settings.token && !this.isSyncing) {
+                console.log('Auto-sync triggered (Timer)');
+                await this.performSync(true);
             }
         }, intervalMs);
-
-        console.log(`Auto-sync started: every ${this.settings.syncInterval} minutes`);
+        console.log('Auto-sync started (1 min interval)');
     }
 
-    /**
-     * Stop auto-sync interval
-     */
     stopAutoSync(): void {
         if (this.syncIntervalId !== null) {
             window.clearInterval(this.syncIntervalId);
             this.syncIntervalId = null;
-            console.log('Auto-sync stopped');
         }
     }
 
-    /**
-     * Show sync status in a notice
-     */
-    async showSyncStatus(): Promise<void> {
-        const result = await this.networkClient.getSyncStatus();
-
-        if (result.success && result.status) {
-            const s = result.status;
-            const usedMB = (s.storage.used / 1024 / 1024).toFixed(2);
-
-            new Notice(
-                `📊 Honos Sync Status\n\n` +
-                `👤 User: ${s.user.email}\n` +
-                `📁 Files: ${s.files.count}\n` +
-                `💾 Storage: ${usedMB} MB\n` +
-                `🔗 Connected: ${s.connected ? 'Yes' : 'No'}`,
-                15000
-            );
-        } else {
-            new Notice(`❌ Failed to get status: ${result.error}`);
+    async performSync(silent: boolean = false): Promise<void> {
+        if (!this.settings.token) {
+            if (!silent) new Notice('Please configure API token.');
+            return;
         }
-    }
 
-    /**
-     * Perform a full vault sync
-     */
-    async performSync(): Promise<void> {
+        if (this.isSyncing) return;
+        this.isSyncing = true;
         this.updateStatusBar('Syncing...', 'syncing');
-        await this.syncManager.syncVault(false);
-        this.updateStatusBar('Idle', 'idle');
+
+        try {
+            if (!silent) new Notice('🔄 Starting sync...');
+
+            // 1. Get remote state
+            const listRes = await this.networkClient.listFiles();
+            if (!listRes.success) throw new Error(listRes.error);
+
+            const remoteFiles = listRes.files || [];
+            const remoteMap = new Map(remoteFiles.map(f => [f.path, f]));
+
+            // 2. Get local state
+            const localFiles = this.app.vault.getFiles();
+            const localMap = new Map(localFiles.map(f => [f.path, f]));
+
+            let processedCount = 0;
+
+            // 3. Process Downloads (Remote is newer)
+            for (const remote of remoteFiles) {
+                const localMeta = this.metadataManager.getMetadata(remote.path);
+                const localFile = localMap.get(remote.path);
+
+                // If remote revision > local known revision
+                if (!localMeta || remote.revision > localMeta.revision) {
+                    await this.processDownload(remote, localFile);
+                    processedCount++;
+                }
+            }
+
+            // 4. Process Uploads (Local changes)
+            for (const file of localFiles) {
+                const content = await this.app.vault.read(file);
+                const currentHash = await calculateHash(content);
+                const localMeta = this.metadataManager.getMetadata(file.path);
+
+                // If Hash changed compared to what we last synced
+                if (!localMeta || localMeta.hash !== currentHash) {
+                    const remote = remoteMap.get(file.path);
+                    if (remote && localMeta && remote.revision > localMeta.revision) {
+                        // Conflict or missed update: skip upload
+                        continue;
+                    }
+
+                    await this.processUpload(file, content, currentHash, localMeta?.revision || 0);
+                    processedCount++;
+                }
+            }
+
+            await this.saveSettings();
+
+            if (!silent && processedCount > 0) {
+                new Notice(`✅ Sync complete. Processed ${processedCount} files.`);
+            }
+
+        } catch (err: any) {
+            console.error('Sync error:', err);
+            if (!silent) new Notice(`❌ Sync failed: ${err.message}`);
+            this.updateStatusBar('Error', 'error');
+        } finally {
+            this.isSyncing = false;
+            if (!this.statusBarItem.getText().includes('Error')) {
+                this.updateStatusBar('Idle', 'idle');
+            }
+        }
     }
 
-    /**
-     * Update the status bar text and icon
-     */
-    updateStatusBar(text: string, state: 'idle' | 'syncing' | 'error' = 'idle') {
-        this.statusBarItem.empty();
+    async processDownload(remote: RemoteFile, localFile: TFile | undefined) {
+        // console.log(`Downloading ${remote.path} (Rev: ${remote.revision})`);
 
-        if (state === 'syncing') {
-            this.statusBarItem.addClass('sync-plugin-status-syncing');
-        } else {
-            this.statusBarItem.removeClass('sync-plugin-status-syncing');
+        const res = await this.networkClient.downloadFile(remote.path, remote.revision);
+        if (res.success && res.file && res.file.content !== undefined) {
+            if (localFile) {
+                await this.app.vault.modify(localFile, res.file.content);
+            } else {
+                await this.ensureFolder(remote.path);
+                await this.app.vault.create(remote.path, res.file.content);
+            }
+
+            this.metadataManager.updateMetadata(remote.path, {
+                path: remote.path,
+                hash: remote.hash,
+                revision: remote.revision,
+                parentRevision: remote.revision,
+                updatedAt: Date.now()
+            });
         }
+    }
 
-        if (state === 'error') {
-            this.statusBarItem.addClass('sync-plugin-status-error');
-        } else {
-            this.statusBarItem.removeClass('sync-plugin-status-error');
+    async processUpload(file: TFile, content: string, hash: string, parentRevision: number) {
+        // console.log(`Uploading ${file.path} (ParentRev: ${parentRevision})`);
+
+        const chunks = splitIntoChunks(content);
+        const res = await this.networkClient.uploadFile(
+            file.path,
+            chunks,
+            hash,
+            file.stat.size,
+            parentRevision
+        );
+
+        if (res.success && res.revision) {
+            this.metadataManager.updateMetadata(file.path, {
+                path: file.path,
+                hash: hash,
+                revision: res.revision,
+                parentRevision: res.revision,
+                updatedAt: Date.now()
+            });
+        } else if (res.conflict) {
+            new Notice(`⚠️ Conflict detected in ${file.path}`);
+            const conflictPath = this.getConflictPath(file.path);
+            await this.app.vault.adapter.rename(file.path, conflictPath);
+            this.metadataManager.deleteMetadata(file.path);
+            new Notice(`Moved local changes to ${conflictPath}`);
         }
+    }
 
+    async ensureFolder(filePath: string) {
+        const folder = filePath.substring(0, filePath.lastIndexOf('/'));
+        if (folder && !(await this.app.vault.adapter.exists(folder))) {
+            await this.app.vault.createFolder(folder);
+        }
+    }
+
+    getConflictPath(path: string): string {
+        const ext = path.split('.').pop();
+        const base = path.substring(0, path.lastIndexOf('.'));
+        return `${base}.conflict-${Date.now()}.${ext}`;
+    }
+
+    updateStatusBar(text: string, state: 'idle' | 'syncing' | 'error') {
         this.statusBarItem.setText(`Honos: ${text}`);
+        if (state === 'error') this.statusBarItem.addClass('status-bar-item mod-error');
+        else this.statusBarItem.removeClass('status-bar-item mod-error');
     }
 }

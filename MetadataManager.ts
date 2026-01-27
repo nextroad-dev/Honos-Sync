@@ -1,68 +1,67 @@
 import { Plugin } from 'obsidian';
-import { LocalFileMetadata } from './types';
+
+export interface FileMetadata {
+    path: string;
+    hash: string;
+    revision: number;
+    parentRevision: number;
+    updatedAt: number;
+}
 
 export class MetadataManager {
     private plugin: Plugin;
-    private metadata: Record<string, LocalFileMetadata> = {};
-    private loaded = false;
-    private metadataPath: string;
+    private metadata: Record<string, FileMetadata> = {};
 
     constructor(plugin: Plugin) {
         this.plugin = plugin;
-        this.metadataPath = `${this.plugin.manifest.dir}/metadata.json`;
     }
 
     async load() {
-        if (this.loaded) return;
-        const adapter = this.plugin.app.vault.adapter;
+        // Load data from plugin's data.json (merged with settings)
+        // Note: Ideally metadata should be separate from settings to avoid bloat
+        // But for simplicity in this version, we might store it under a 'fileMetadata' key in settings
+        // Or better, use a separate file adapter. However, plugin.loadData() loads data.json.
+        // Let's assume we store it in a separate property if possible or mix it.
+        // Actually, let's use a separate file `.honos-sync-meta.json` in the vault root (hidden) or adapter.
+        // But the easiest way is plugin.saveData({ settings: ..., metadata: ... })
+        // Let's modify SyncPluginSettings to include metadata store.
 
-        if (await adapter.exists(this.metadataPath)) {
-            const content = await adapter.read(this.metadataPath);
-            try {
-                this.metadata = JSON.parse(content);
-            } catch (e) {
-                console.error('Failed to parse metadata', e);
-                this.metadata = {};
-            }
-        }
-        this.loaded = true;
+        // Wait, main.ts uses loadSettings which loads data.json
+        // We should hook into that.
     }
 
-    async save() {
-        const adapter = this.plugin.app.vault.adapter;
-        await adapter.write(this.metadataPath, JSON.stringify(this.metadata));
-    }
+    // Changing Strategy: Store metadata in memory map and persist to data.json
+    // via the main plugin settings object.
 
-    getMetadata(path: string): LocalFileMetadata | null {
+    getMetadata(path: string): FileMetadata | null {
         return this.metadata[path] || null;
     }
 
-    async saveMetadata(path: string, meta: Partial<LocalFileMetadata>) {
+    updateMetadata(path: string, meta: Partial<FileMetadata>) {
         const current = this.metadata[path] || {
             path,
             hash: '',
-            size: 0,
             revision: 0,
             parentRevision: 0,
-            lastSyncedAt: 0
+            updatedAt: Date.now()
         };
 
-        this.metadata[path] = { ...current, ...meta, path }; // Ensure path is set
-        await this.save();
+        this.metadata[path] = {
+            ...current,
+            ...meta,
+            updatedAt: Date.now()
+        };
     }
 
-    async deleteMetadata(path: string) {
-        if (this.metadata[path]) {
-            delete this.metadata[path];
-            await this.save();
-        }
+    deleteMetadata(path: string) {
+        delete this.metadata[path];
     }
 
-    async renameMetadata(oldPath: string, newPath: string) {
-        if (this.metadata[oldPath]) {
-            this.metadata[newPath] = { ...this.metadata[oldPath], path: newPath };
-            delete this.metadata[oldPath];
-            await this.save();
-        }
+    getAllMetadata() {
+        return this.metadata;
+    }
+
+    setAllMetadata(data: Record<string, FileMetadata>) {
+        this.metadata = data || {};
     }
 }
