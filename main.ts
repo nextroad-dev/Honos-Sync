@@ -17,7 +17,7 @@ export default class SyncPlugin extends Plugin {
     settings: SyncPluginSettings;
     networkClient: NetworkClient;
     metadataManager: MetadataManager;
-    wsClient: WebSocketClient;
+    wsClient: WebSocketClient | null = null;
     statusBarItem: HTMLElement;
     isSyncing: boolean = false;
     wsConnected: boolean = false;
@@ -34,6 +34,10 @@ export default class SyncPlugin extends Plugin {
         console.log('Loading Honos Sync Plugin (V2 - Enforced + WebSocket)');
 
         await this.loadSettings();
+
+        // Status bar
+        this.statusBarItem = this.addStatusBarItem();
+        this.updateStatusBar(this.settings.token ? 'Disconnected' : 'Not Authenticated', 'idle');
 
         // Enforce default settings
         this.settings.autoSync = true;
@@ -76,22 +80,8 @@ export default class SyncPlugin extends Plugin {
             }
         });
 
-        // Initialize WebSocket
-        if (this.settings.token) {
-            this.wsClient = new WebSocketClient(this.settings.token);
-
-            this.wsClient.onStatusChange((connected: boolean) => {
-                this.wsConnected = connected;
-                this.updateStatusBar(connected ? 'Connected' : 'Disconnected', 'idle');
-            });
-
-            this.wsClient.onFileChange(() => {
-                console.log('WebSocket triggering sync');
-                this.debouncedSync();
-            });
-
-            this.wsClient.connect();
-        }
+        // Initialize WebSocket + AutoSync (if token exists)
+        this.applyAuthState();
 
         // Register file events
         this.registerEvent(this.app.vault.on('modify', (file) => {
@@ -126,6 +116,50 @@ export default class SyncPlugin extends Plugin {
         // Persist metadata into settings
         this.settings.filesMetadata = this.metadataManager.getAllMetadata();
         await this.saveData(this.settings);
+    }
+
+    async handleTokenUpdated(token: string): Promise<void> {
+        const normalized = token.trim();
+        if (this.settings.token === normalized) return;
+
+        this.settings.token = normalized;
+        this.networkClient.setToken(normalized);
+        await this.saveSettings();
+        this.applyAuthState();
+    }
+
+    private applyAuthState(): void {
+        const token = this.settings.token?.trim() || '';
+
+        if (!token) {
+            this.stopAutoSync();
+            this.wsClient?.disconnect();
+            this.wsClient = null;
+            this.wsConnected = false;
+            this.updateStatusBar('Not Authenticated', 'idle');
+            return;
+        }
+
+        this.startAutoSync();
+        this.initializeWebSocket(token);
+    }
+
+    private initializeWebSocket(token: string): void {
+        this.wsClient?.disconnect();
+
+        this.wsClient = new WebSocketClient(token);
+
+        this.wsClient.onStatusChange((connected: boolean) => {
+            this.wsConnected = connected;
+            this.updateStatusBar(connected ? 'Connected' : 'Disconnected', 'idle');
+        });
+
+        this.wsClient.onFileChange(() => {
+            console.log('WebSocket triggering sync');
+            this.debouncedSync();
+        });
+
+        this.wsClient.connect();
     }
 
     startAutoSync(): void {
@@ -522,6 +556,7 @@ export default class SyncPlugin extends Plugin {
 
 
     updateStatusBar(text: string, state: 'idle' | 'syncing' | 'error') {
+        if (!this.statusBarItem) return;
         let indicator = '🔴'; // Default disconnected
 
         if (this.wsConnected) {

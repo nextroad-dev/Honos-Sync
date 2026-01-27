@@ -1,6 +1,5 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import SyncPlugin from './main';
-import { NetworkClient } from './NetworkClient';
 
 /**
  * SettingsTab - UI for plugin configuration and authentication
@@ -48,9 +47,7 @@ export class SyncPluginSettingTab extends PluginSettingTab {
                     .setPlaceholder('Enter your API token...')
                     .setValue(this.plugin.settings.token)
                     .onChange(async (value) => {
-                        this.plugin.settings.token = value;
-                        await this.plugin.saveSettings();
-                        this.plugin.networkClient.setToken(value);
+                        await this.plugin.handleTokenUpdated(value);
                     });
                 // Make input wider and password-like
                 text.inputEl.type = 'password';
@@ -99,9 +96,7 @@ export class SyncPluginSettingTab extends PluginSettingTab {
                 .setButtonText('Clear Token')
                 .setWarning()
                 .onClick(async () => {
-                    this.plugin.settings.token = '';
-                    await this.plugin.saveSettings();
-                    this.plugin.networkClient.setToken('');
+                    await this.plugin.handleTokenUpdated('');
                     new Notice('API token cleared');
                     this.display(); // Refresh the settings tab
                 }));
