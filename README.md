@@ -44,7 +44,7 @@
 2. 点击 **Add Beta plugin**
 3. 在输入框中粘贴以下仓库地址：
    ```
-   https://github.com/nextroad/honos-sync-client
+   https://github.com/nextroad-dev/Honos-Sync
    ```
 4. 点击 **Add Plugin**
 5. 等待 BRAT 下载并安装插件
