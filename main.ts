@@ -2,6 +2,7 @@ import { Plugin, Notice, TFile, debounce } from 'obsidian';
 import { SyncPluginSettingTab } from './SettingsTab';
 import { NetworkClient } from './NetworkClient';
 import { MetadataManager } from './MetadataManager';
+import { WebSocketClient } from './WebSocketClient';
 import { calculateHash, splitIntoChunks } from './utils';
 import {
     SyncPluginSettings,
@@ -14,6 +15,7 @@ export default class SyncPlugin extends Plugin {
     settings: SyncPluginSettings;
     networkClient: NetworkClient;
     metadataManager: MetadataManager;
+    wsClient: WebSocketClient | null = null;
     private syncIntervalId: number | null = null;
     private isSyncing: boolean = false;
     private statusBarItem: HTMLElement;
@@ -25,7 +27,7 @@ export default class SyncPlugin extends Plugin {
     }, 5000, true);
 
     async onload() {
-        console.log('Loading Honos Sync Plugin (V2 - Enforced)');
+        console.log('Loading Honos Sync Plugin (V2 - Enforced + WebSocket)');
 
         await this.loadSettings();
 
@@ -79,6 +81,24 @@ export default class SyncPlugin extends Plugin {
             this.startAutoSync();
         }
 
+
+        // Initialize WebSocket for real-time sync
+        if (this.settings.token) {
+            this.wsClient = new WebSocketClient(this.settings.token);
+            this.wsClient.onStatusChange((connected) => {
+                this.updateStatusBar(connected ? 'Connected' : 'Disconnected', connected ? 'idle' : 'error');
+            });
+            this.wsClient.onFileChange(async (event) => {
+                console.log('[SYNC] File change notification:', event);
+                // Auto-download the changed file
+                if (event.type === 'upload' || event.type === 'update') {
+                    new Notice(`📥 Downloading updated file: ${event.filePath}`);
+                    await this.performSync(true);
+                }
+            });
+            this.wsClient.connect();
+        }
+
         // Event Listeners for File Changes
         this.registerEvent(this.app.vault.on('modify', (f) => this.onChange(f)));
         this.registerEvent(this.app.vault.on('create', (f) => this.onChange(f)));
@@ -94,6 +114,7 @@ export default class SyncPlugin extends Plugin {
 
     onunload() {
         this.stopAutoSync();
+        this.wsClient?.disconnect();
         this.saveSettings(); // Save metadata on unload
     }
 
