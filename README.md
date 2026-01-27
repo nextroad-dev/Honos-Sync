@@ -180,7 +180,3 @@ npx tsc --noEmit
 
 MIT 许可证
 
-## 支持与反馈
-
-- [GitHub Issues](https://github.com/nextroad/honos-sync-client/issues)
-- [Honos-Core 文档](https://github.com/nextroad/honos-core)
