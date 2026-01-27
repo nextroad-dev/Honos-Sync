@@ -179,7 +179,7 @@ export default class SyncPlugin extends Plugin {
     }
 
     /**
-     * Perform a full vault sync (bidirectional)
+     * Perform a full vault sync (bidirectional with timestamp-based conflict resolution)
      * @param silent - If true, don't show notices for success
      */
     async performSync(silent: boolean = false): Promise<void> {
@@ -208,55 +208,95 @@ export default class SyncPlugin extends Plugin {
             }
 
             const remoteFiles = remoteFilesResult.files || [];
-            const remoteFilePaths = new Set(remoteFiles.map(f => f.path));
+            const remoteFileMap = new Map<string, RemoteFile>();
+            remoteFiles.forEach(f => remoteFileMap.set(f.path, f));
 
             // Step 2: Get local files
             const localFiles = this.app.vault.getFiles().filter(file => {
                 const ext = file.extension.toLowerCase();
                 return ['md', 'txt', 'json', 'css', 'js', 'html', 'xml', 'yaml', 'yml'].includes(ext);
             });
-            const localFilePaths = new Set(localFiles.map(f => f.path));
 
             let downloadedCount = 0;
             let uploadedCount = 0;
             let failedCount = 0;
+            let skippedCount = 0;
 
-            // Step 3: Download files that exist on server but not locally
-            for (const remoteFile of remoteFiles) {
-                if (!localFilePaths.has(remoteFile.path)) {
-                    console.log(`Downloading new file from server: ${remoteFile.path}`);
-                    const success = await this.downloadFile(remoteFile.path);
-                    if (success) {
-                        downloadedCount++;
-                    } else {
-                        failedCount++;
-                    }
-                }
-            }
-
-            // Step 4: Upload local files to server
-            for (const file of localFiles) {
+            // Step 3: Process each local file
+            for (const localFile of localFiles) {
                 try {
-                    const content = await this.app.vault.read(file);
-                    const result = await this.networkClient.uploadFile(file.path, content);
+                    const remoteFile = remoteFileMap.get(localFile.path);
 
-                    if (result.success) {
-                        uploadedCount++;
-                    } else {
-                        failedCount++;
-                        console.error(`Failed to upload ${file.path}: ${result.error}`);
+                    if (!remoteFile) {
+                        // File only exists locally - upload it
+                        console.log(`Uploading new file to server: ${localFile.path}`);
+                        const content = await this.app.vault.read(localFile);
+                        const result = await this.networkClient.uploadFile(localFile.path, content);
 
-                        // Handle authentication errors
-                        if (result.error?.includes('Unauthorized') || result.error?.includes('Invalid')) {
-                            new Notice('❌ Authentication failed. Please check your API token.');
-                            this.isSyncing = false;
-                            this.updateStatusBar('Auth Failed', 'error');
-                            return;
+                        if (result.success) {
+                            uploadedCount++;
+                        } else {
+                            failedCount++;
+                            console.error(`Failed to upload ${localFile.path}: ${result.error}`);
+
+                            // Handle authentication errors
+                            if (result.error?.includes('Unauthorized') || result.error?.includes('Invalid')) {
+                                new Notice('❌ Authentication failed. Please check your API token.');
+                                this.isSyncing = false;
+                                this.updateStatusBar('Auth Failed', 'error');
+                                return;
+                            }
                         }
+                    } else {
+                        // File exists both locally and remotely - compare timestamps
+                        const localMtime = localFile.stat.mtime;
+                        const remoteMtime = new Date(remoteFile.updatedAt).getTime();
+
+                        if (localMtime > remoteMtime) {
+                            // Local file is newer - upload it
+                            console.log(`Uploading updated file (local newer): ${localFile.path}`);
+                            const content = await this.app.vault.read(localFile);
+                            const result = await this.networkClient.uploadFile(localFile.path, content);
+
+                            if (result.success) {
+                                uploadedCount++;
+                            } else {
+                                failedCount++;
+                                console.error(`Failed to upload ${localFile.path}: ${result.error}`);
+                            }
+                        } else if (remoteMtime > localMtime) {
+                            // Remote file is newer - download it
+                            console.log(`Downloading updated file (remote newer): ${localFile.path}`);
+                            const success = await this.downloadFile(localFile.path);
+
+                            if (success) {
+                                downloadedCount++;
+                            } else {
+                                failedCount++;
+                            }
+                        } else {
+                            // Files are the same - skip
+                            skippedCount++;
+                        }
+
+                        // Remove from map to track processed files
+                        remoteFileMap.delete(localFile.path);
                     }
                 } catch (error) {
                     failedCount++;
-                    console.error(`Error uploading ${file.path}:`, error);
+                    console.error(`Error processing ${localFile.path}:`, error);
+                }
+            }
+
+            // Step 4: Download files that only exist on server
+            for (const [path, remoteFile] of remoteFileMap) {
+                console.log(`Downloading new file from server: ${path}`);
+                const success = await this.downloadFile(path);
+
+                if (success) {
+                    downloadedCount++;
+                } else {
+                    failedCount++;
                 }
             }
 
@@ -265,6 +305,7 @@ export default class SyncPlugin extends Plugin {
                 const parts = [];
                 if (downloadedCount > 0) parts.push(`${downloadedCount} downloaded`);
                 if (uploadedCount > 0) parts.push(`${uploadedCount} uploaded`);
+                if (skippedCount > 0) parts.push(`${skippedCount} unchanged`);
                 if (failedCount > 0) parts.push(`${failedCount} failed`);
 
                 const summary = parts.join(', ');
