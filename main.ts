@@ -94,8 +94,9 @@ export default class SyncPlugin extends Plugin {
                 console.log('[SYNC] File change notification:', event);
                 // Auto-download the changed file
                 if (event.type === 'upload' || event.type === 'update') {
-                    new Notice(`📥 Downloading updated file: ${event.filePath}`);
+                    new Notice('🔄 Syncing...');
                     await this.performSync(true);
+                    new Notice('✅ Sync complete');
                 }
             });
             this.wsClient.connect();
@@ -249,8 +250,7 @@ export default class SyncPlugin extends Plugin {
             console.log('[SYNC] Settings saved');
 
             if (!silent) {
-                if (processedCount > 0) new Notice(`✅ Sync complete. Processed ${processedCount} files.`);
-                else new Notice(`✅ Sync complete. No changes necessary.`);
+                new Notice('✅ Sync complete');
             }
             console.log('[SYNC] Sync completed successfully');
 
