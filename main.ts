@@ -60,6 +60,16 @@ export default class SyncPlugin extends Plugin {
             callback: async () => await this.performSync()
         });
 
+        this.addCommand({
+            id: 'reset-sync-lock',
+            name: 'Force Reset Sync Lock',
+            callback: () => {
+                this.isSyncing = false;
+                this.updateStatusBar('Idle', 'idle');
+                new Notice('Sync lock reset. You can try syncing again.');
+            }
+        });
+
         // Initialize status bar
         this.statusBarItem = this.addStatusBarItem();
         this.updateStatusBar('Idle', 'idle');
@@ -131,7 +141,7 @@ export default class SyncPlugin extends Plugin {
 
         this.isSyncing = true;
         this.updateStatusBar('Syncing...', 'syncing');
-        if (!silent) new Notice('🚀 Starting Sync...', 2000);
+        if (!silent) new Notice(`🚀 Starting Sync to ${SERVER_URL}...`, 2000);
 
         try {
             // 1. Get remote state
