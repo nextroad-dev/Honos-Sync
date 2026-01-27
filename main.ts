@@ -206,6 +206,26 @@ export default class SyncPlugin extends Plugin {
             }
             console.log(`[SYNC] Downloads complete. Processed ${processedCount}`);
 
+            // 3.5 Process Local Deletes
+            console.log('[SYNC] Step 3.5: Processing local deletes...');
+            const allMetaPaths = Object.keys(this.metadataManager.getAllMetadata());
+            for (const path of allMetaPaths) {
+                if (!localMap.has(path)) {
+                    const meta = this.metadataManager.getMetadata(path);
+                    // If meta.hash is empty, it's already marked deleted/tombstone
+                    if (meta && meta.hash !== '') {
+                        const remote = remoteMap.get(path);
+                        // If remote is newer, we should have processed it in downloads (or will do)
+                        if (remote && remote.revision > meta.revision) {
+                            continue;
+                        }
+
+                        await this.processLocalDelete(path, meta.revision);
+                        processedCount++;
+                    }
+                }
+            }
+
             // 4. Process Uploads (Local changes)
             console.log('[SYNC] Step 4: Processing uploads...');
             for (const file of localFiles) {
@@ -272,6 +292,23 @@ export default class SyncPlugin extends Plugin {
     async processDownload(remote: RemoteFile, localFile: TFile | undefined) {
         // console.log(`Downloading ${remote.path} (Rev: ${remote.revision})`);
 
+        // Handle Remote Deletion
+        if (remote.isDeleted) {
+            console.log(`[SYNC] Remote file deleted: ${remote.path}`);
+            if (localFile) {
+                await this.app.vault.delete(localFile);
+            }
+            // Update metadata to track this deletion revision
+            this.metadataManager.updateMetadata(remote.path, {
+                path: remote.path,
+                hash: '',
+                revision: remote.revision,
+                parentRevision: remote.revision,
+                updatedAt: Date.now()
+            });
+            return;
+        }
+
         const res = await this.networkClient.downloadFile(remote.path, remote.revision);
         if (res.success && res.file && res.file.content !== undefined) {
             if (localFile) {
@@ -317,6 +354,25 @@ export default class SyncPlugin extends Plugin {
             await this.app.vault.adapter.rename(file.path, conflictPath);
             this.metadataManager.deleteMetadata(file.path);
             new Notice(`Moved local changes to ${conflictPath}`);
+        }
+    }
+
+    async processLocalDelete(path: string, parentRevision: number) {
+        console.log(`[SYNC] Deleting remote file: ${path}`);
+        const res = await this.networkClient.deleteFile(path, parentRevision);
+        if (res.success && res.revision) {
+            this.metadataManager.updateMetadata(path, {
+                path,
+                hash: '',
+                revision: res.revision,
+                parentRevision: res.revision,
+                updatedAt: Date.now()
+            });
+        } else if (res.conflict) {
+            // If conflict on delete, it means someone else updated it. 
+            // We should probably download the update in next sync.
+            // For now, just log it.
+            console.log('[SYNC] Conflict on delete, ignoring.');
         }
     }
 

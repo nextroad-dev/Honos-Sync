@@ -53,6 +53,7 @@ export interface RemoteFile {
     revision: number;
     parentRevision: number | null;
     isConflict: boolean;
+    isDeleted?: boolean;
     updatedAt: string;
 }
 
