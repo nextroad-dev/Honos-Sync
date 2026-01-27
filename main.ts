@@ -17,11 +17,12 @@ export default class SyncPlugin extends Plugin {
     settings: SyncPluginSettings;
     networkClient: NetworkClient;
     metadataManager: MetadataManager;
-    wsClient: WebSocketClient | null = null;
+    wsClient: WebSocketClient;
+    statusBarItem: HTMLElement;
+    isSyncing: boolean = false;
+    wsConnected: boolean = false;
+    isPluginModifying: boolean = false; // Guard flag
     private syncIntervalId: number | null = null;
-    private isSyncing: boolean = false;
-    private wsConnected: boolean = false;
-    private statusBarItem: HTMLElement;
 
     // Debounced sync for file changes
     private debouncedSync = debounce(() => {
@@ -75,46 +76,40 @@ export default class SyncPlugin extends Plugin {
             }
         });
 
-        // Initialize status bar
-        this.statusBarItem = this.addStatusBarItem();
-        this.updateStatusBar('Idle', 'idle');
-
-        // Always start auto-sync if token exists
-        if (this.settings.token) {
-            this.startAutoSync();
-        }
-
-
-        // Initialize WebSocket for real-time sync
+        // Initialize WebSocket
         if (this.settings.token) {
             this.wsClient = new WebSocketClient(this.settings.token);
-            this.wsClient.onStatusChange((connected) => {
+
+            this.wsClient.onStatusChange((connected: boolean) => {
                 this.wsConnected = connected;
-                this.updateStatusBar(connected ? 'Connected' : 'Disconnected', connected ? 'idle' : 'error');
+                this.updateStatusBar(connected ? 'Connected' : 'Disconnected', 'idle');
             });
-            this.wsClient.onFileChange(async (event) => {
-                console.log('[SYNC] File change notification:', event);
-                // Auto-download the changed file
-                if (event.type === 'upload' || event.type === 'update') {
-                    new Notice('🔄 Syncing...');
-                    await this.performSync(true);
-                    new Notice('✅ Sync complete');
-                }
+
+            this.wsClient.onFileChange(() => {
+                console.log('WebSocket triggering sync');
+                this.debouncedSync();
             });
+
             this.wsClient.connect();
         }
 
-        // Event Listeners for File Changes
-        this.registerEvent(this.app.vault.on('modify', (f) => this.onChange(f)));
-        this.registerEvent(this.app.vault.on('create', (f) => this.onChange(f)));
-        this.registerEvent(this.app.vault.on('delete', () => this.debouncedSync()));
-        this.registerEvent(this.app.vault.on('rename', () => this.debouncedSync()));
-    }
-
-    onChange(file: any) {
-        if (this.settings.token && file instanceof TFile) {
+        // Register file events
+        this.registerEvent(this.app.vault.on('modify', (file) => {
+            if (this.isPluginModifying) return; // Ignore our own changes
             this.debouncedSync();
-        }
+        }));
+        this.registerEvent(this.app.vault.on('create', (file) => {
+            if (this.isPluginModifying) return;
+            this.debouncedSync();
+        }));
+        this.registerEvent(this.app.vault.on('delete', (file) => {
+            if (this.isPluginModifying) return;
+            this.debouncedSync();
+        }));
+        this.registerEvent(this.app.vault.on('rename', (file) => {
+            if (this.isPluginModifying) return;
+            this.debouncedSync();
+        }));
     }
 
     onunload() {
