@@ -222,6 +222,14 @@ export default class SyncPlugin extends Plugin {
                 if (processedPaths.has(path)) continue;
 
                 if (!localMap.has(path)) {
+                    // DOUBLE CHECK: Obsidian's getFiles() cache might be stale immediately after a write.
+                    // Verify with adapter (filesystem) before declaring it deleted.
+                    const actuallyExists = await this.app.vault.adapter.exists(path);
+                    if (actuallyExists) {
+                        // console.log(`[SYNC] False alarm: ${path} found on disk (cache stale).`);
+                        continue;
+                    }
+
                     const meta = this.metadataManager.getMetadata(path);
                     // If meta.hash is empty, it's already marked deleted/tombstone
                     if (meta && meta.hash !== '') {
