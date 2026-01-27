@@ -1,10 +1,10 @@
 {
-    "id": "honos-sync",
-    "name": "Honos Sync",
-    "version": "2.0.0",
-    "minAppVersion": "0.15.0",
-    "description": "Sync your Obsidian vault with Honos-Core backend server",
-    "author": "NextRoad",
-    "authorUrl": "https://github.com/nextroad",
-    "isDesktopOnly": false
+	"id": "honos-sync",
+	"name": "Honos Sync",
+	"version": "2.3.0",
+	"minAppVersion": "0.15.0",
+	"description": "Sync your Obsidian vault with Honos-Core backend server",
+	"author": "NextRoad",
+	"authorUrl": "https://github.com/nextroad",
+	"isDesktopOnly": false
 }
